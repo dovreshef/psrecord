@@ -5,6 +5,10 @@ edition = "2021"
 license = "Apache-2.0"
 readme = "README.md"
 
+[[bin]]
+name = "fixture_alloc_sleep"
+path = "tests/bin/fixture_alloc_sleep.rs"
+
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 sysinfo = "0.38"

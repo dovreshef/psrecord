@@ -3,7 +3,11 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use plotters::prelude::*;
 
-use crate::{memory_scale::MemoryUnit, monitor::Sample};
+use crate::{
+    memory_scale::MemoryUnit,
+    monitor::Sample,
+    time_axis::{DEFAULT_TICK_COUNT, TimeAxis},
+};
 
 pub fn render_memory(
     samples: &[Sample],
@@ -26,8 +30,9 @@ pub fn render_memory(
         .iter()
         .map(|s| unit.scale_bytes(s.rss_bytes))
         .collect();
+    let time_axis = TimeAxis::from_samples(samples);
 
-    let x_max = times.last().copied().unwrap_or(1.0_f64);
+    let x_max = time_axis.map_or(1.0_f64, |axis| axis.total_seconds().max(0.001_f64));
     let y_max = values.iter().copied().fold(0.0_f64, f64::max).max(1.0_f64);
 
     let root = BitMapBackend::new(&path, (width, height)).into_drawing_area();
@@ -43,7 +48,11 @@ pub fn render_memory(
 
     chart
         .configure_mesh()
-        .x_desc("Time (s)")
+        .x_desc("Time")
+        .x_labels(DEFAULT_TICK_COUNT)
+        .x_label_formatter(&|v| {
+            time_axis.map_or_else(|| format!("{v:.1}s"), |axis| axis.format_label(*v))
+        })
         .y_desc(format!("RSS ({})", unit.label()))
         .y_label_formatter(&|v| format_axis_value(*v, y_max))
         .draw()
@@ -70,10 +79,11 @@ pub fn render_cpu(
 ) -> Result<()> {
     let path = output_dir.join("cpu.png");
 
-    let times: Vec<f32> = samples.iter().map(|s| s.elapsed.as_secs_f32()).collect();
+    let times: Vec<f64> = samples.iter().map(|s| s.elapsed.as_secs_f64()).collect();
     let values: Vec<f32> = samples.iter().map(|s| s.cpu_percent).collect();
+    let time_axis = TimeAxis::from_samples(samples);
 
-    let x_max = times.last().copied().unwrap_or(1.0_f32);
+    let x_max = time_axis.map_or(1.0_f64, |axis| axis.total_seconds().max(0.001_f64));
     let y_max = values
         .iter()
         .copied()
@@ -88,12 +98,16 @@ pub fn render_cpu(
         .margin(10)
         .x_label_area_size(40)
         .y_label_area_size(60)
-        .build_cartesian_2d(0.0_f32..x_max, 0.0_f32..y_max)
+        .build_cartesian_2d(0.0_f64..x_max, 0.0_f32..y_max)
         .context("Failed to build chart")?;
 
     chart
         .configure_mesh()
-        .x_desc("Time (s)")
+        .x_desc("Time")
+        .x_labels(DEFAULT_TICK_COUNT)
+        .x_label_formatter(&|v| {
+            time_axis.map_or_else(|| format!("{v:.1}s"), |axis| axis.format_label(*v))
+        })
         .y_desc("CPU %")
         .y_label_formatter(&|v| format!("{v:.0}%"))
         .draw()

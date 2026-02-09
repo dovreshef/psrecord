@@ -2,8 +2,13 @@ mod ascii;
 mod graph;
 mod memory_scale;
 mod monitor;
+mod time_axis;
 
-use std::{path::PathBuf, process::ExitCode, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    process::ExitCode,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -15,9 +20,9 @@ struct Cli {
     #[arg(short, long, default_value_t = 1000)]
     interval: u64,
 
-    /// Output directory for PNG graphs
-    #[arg(short, long, default_value = "psrecord-output")]
-    output: PathBuf,
+    /// Output directory for PNG graphs (default: psr-<command>-<timestamp>)
+    #[arg(short, long)]
+    output: Option<PathBuf>,
 
     /// Suppress ASCII graphs on stdout
     #[arg(long)]
@@ -38,12 +43,13 @@ struct Cli {
 
 fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
+    let output_dir = resolve_output_dir(cli.output, &cli.command);
 
     // Create output directory eagerly (fail fast on permission errors)
-    std::fs::create_dir_all(&cli.output).with_context(|| {
+    std::fs::create_dir_all(&output_dir).with_context(|| {
         format!(
             "Failed to create output directory: {}",
-            cli.output.display()
+            output_dir.display()
         )
     })?;
 
@@ -75,14 +81,14 @@ fn main() -> Result<ExitCode> {
 
     graph::render_memory(
         &result.samples,
-        &cli.output,
+        &output_dir,
         cli.width,
         cli.height,
         &result.command_name,
     )?;
     graph::render_cpu(
         &result.samples,
-        &cli.output,
+        &output_dir,
         cli.width,
         cli.height,
         &result.command_name,
@@ -101,11 +107,59 @@ fn exit_code_from_child(exit_code: Option<i32>) -> ExitCode {
     }
 }
 
+fn resolve_output_dir(output: Option<PathBuf>, command: &[String]) -> PathBuf {
+    output.unwrap_or_else(|| generated_output_dir(command, current_timestamp_millis()))
+}
+
+fn generated_output_dir(command: &[String], timestamp_millis: u128) -> PathBuf {
+    let executable = command.first().map_or("cmd", String::as_str);
+    let clean_name = sanitize_path_component(executable_name(executable));
+    PathBuf::from(format!("psr-{clean_name}-{timestamp_millis}"))
+}
+
+fn current_timestamp_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn executable_name(command: &str) -> &str {
+    Path::new(command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(command)
+}
+
+fn sanitize_path_component(input: &str) -> String {
+    let mut sanitized = String::new();
+    let mut last_dash = false;
+
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            sanitized.push(ch.to_ascii_lowercase());
+            last_dash = false;
+        } else if !last_dash {
+            sanitized.push('-');
+            last_dash = true;
+        }
+    }
+
+    let trimmed = sanitized.trim_matches('-');
+    if trimmed.is_empty() {
+        "cmd".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::process::ExitCode;
+    use std::{path::PathBuf, process::ExitCode};
 
-    use super::exit_code_from_child;
+    use super::{
+        exit_code_from_child, generated_output_dir, resolve_output_dir, sanitize_path_component,
+    };
 
     #[test]
     fn maps_zero_exit_code_to_success() {
@@ -130,5 +184,29 @@ mod tests {
     #[test]
     fn maps_out_of_range_exit_code_to_failure() {
         assert_eq!(exit_code_from_child(Some(300)), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn generates_default_output_dir_name() {
+        let command = vec!["/usr/bin/My Tool".to_string()];
+        let output = generated_output_dir(&command, 1_700_000_000_000);
+
+        assert_eq!(output, PathBuf::from("psr-my-tool-1700000000000"));
+    }
+
+    #[test]
+    fn sanitizes_empty_command_name_to_cmd() {
+        assert_eq!(sanitize_path_component("!!!"), "cmd");
+    }
+
+    #[test]
+    fn keeps_explicit_output_directory() {
+        let explicit = PathBuf::from("custom-output");
+        let command = vec!["my_command".to_string()];
+
+        assert_eq!(
+            resolve_output_dir(Some(explicit.clone()), &command),
+            explicit
+        );
     }
 }
