@@ -11,6 +11,7 @@ sysinfo = "0.38"
 plotters = "0.3"
 rasciigraph = "0.3"
 anyhow = "1.0"
+terminal_size = "0.4"
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
