@@ -39,6 +39,41 @@ Memory graphs auto-select one unit per run based on peak RSS:
 
 The same unit is used for both ASCII and PNG memory graphs.
 
+## Platform prerequisites
+
+`psrecord` generates PNG charts with text rendering via `plotters`, which requires native font libraries on Unix-like systems.
+
+### Linux (Ubuntu/Debian)
+
+Install build tools and font dependencies:
+
+```bash
+sudo apt update
+sudo apt install -y build-essential pkg-config libfontconfig1-dev libfreetype6-dev fontconfig fonts-dejavu-core
+```
+
+Optional sanity checks:
+
+```bash
+pkg-config --modversion fontconfig
+pkg-config --modversion freetype2
+```
+
+### macOS (Homebrew)
+
+Install required dependencies:
+
+```bash
+brew install pkgconf fontconfig freetype
+```
+
+Optional sanity checks:
+
+```bash
+pkg-config --modversion fontconfig
+pkg-config --modversion freetype2
+```
+
 ## Development
 
 ```bash
