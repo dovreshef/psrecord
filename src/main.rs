@@ -11,7 +11,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
 #[derive(Parser, Debug)]
 #[command(name = "psrecord", about = "Monitor process memory and CPU usage")]
@@ -20,19 +20,19 @@ struct Cli {
     #[arg(short, long, default_value_t = 1000)]
     interval: u64,
 
-    /// Output directory for PNG graphs (default: psr-<command>-<timestamp>)
+    /// Output directory for image graphs (default: psr-<command>-<timestamp>)
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// Suppress ASCII graphs on stdout
-    #[arg(long)]
-    no_ascii: bool,
+    /// Output mode: terminal (or term), png, svg. Repeat to combine modes.
+    #[arg(short = 'm', long = "mode", value_enum)]
+    modes: Vec<OutputMode>,
 
-    /// PNG width in pixels
+    /// Image width in pixels
     #[arg(long, default_value_t = 1024)]
     width: u32,
 
-    /// PNG height in pixels
+    /// Image height in pixels
     #[arg(long, default_value_t = 768)]
     height: u32,
 
@@ -41,17 +41,28 @@ struct Cli {
     command: Vec<String>,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum OutputMode {
+    #[value(alias = "term")]
+    Terminal,
+    Png,
+    Svg,
+}
+
 fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
-    let output_dir = resolve_output_dir(cli.output, &cli.command);
+    let modes = resolve_modes(&cli.modes);
+    let output_dir = resolve_output_dir(cli.output, &cli.command, &modes);
 
-    // Create output directory eagerly (fail fast on permission errors)
-    std::fs::create_dir_all(&output_dir).with_context(|| {
-        format!(
-            "Failed to create output directory: {}",
-            output_dir.display()
-        )
-    })?;
+    if let Some(output_dir) = &output_dir {
+        // Create output directory eagerly (fail fast on permission errors)
+        std::fs::create_dir_all(output_dir).with_context(|| {
+            format!(
+                "Failed to create output directory: {}",
+                output_dir.display()
+            )
+        })?;
+    }
 
     let interval = Duration::from_millis(cli.interval);
     let result = monitor::run(&cli.command, interval)?;
@@ -75,24 +86,45 @@ fn main() -> Result<ExitCode> {
             .map_or(0.0, |s| s.elapsed.as_secs_f64()),
     );
 
-    if !cli.no_ascii {
+    if mode_enabled(&modes, OutputMode::Terminal) {
         ascii::print_graphs(&result.samples);
     }
 
-    graph::render_memory(
-        &result.samples,
-        &output_dir,
-        cli.width,
-        cli.height,
-        &result.command_name,
-    )?;
-    graph::render_cpu(
-        &result.samples,
-        &output_dir,
-        cli.width,
-        cli.height,
-        &result.command_name,
-    )?;
+    if mode_enabled(&modes, OutputMode::Png) {
+        let output_dir = output_dir_for_images(output_dir.as_ref())?;
+        graph::render_memory_png(
+            &result.samples,
+            output_dir,
+            cli.width,
+            cli.height,
+            &result.command_name,
+        )?;
+        graph::render_cpu_png(
+            &result.samples,
+            output_dir,
+            cli.width,
+            cli.height,
+            &result.command_name,
+        )?;
+    }
+
+    if mode_enabled(&modes, OutputMode::Svg) {
+        let output_dir = output_dir_for_images(output_dir.as_ref())?;
+        graph::render_memory_svg(
+            &result.samples,
+            output_dir,
+            cli.width,
+            cli.height,
+            &result.command_name,
+        )?;
+        graph::render_cpu_svg(
+            &result.samples,
+            output_dir,
+            cli.width,
+            cli.height,
+            &result.command_name,
+        )?;
+    }
 
     Ok(exit_code_from_child(result.exit_code))
 }
@@ -107,8 +139,43 @@ fn exit_code_from_child(exit_code: Option<i32>) -> ExitCode {
     }
 }
 
-fn resolve_output_dir(output: Option<PathBuf>, command: &[String]) -> PathBuf {
-    output.unwrap_or_else(|| generated_output_dir(command, current_timestamp_millis()))
+fn resolve_modes(requested_modes: &[OutputMode]) -> Vec<OutputMode> {
+    let mut modes = Vec::new();
+
+    if requested_modes.is_empty() {
+        modes.push(OutputMode::Terminal);
+        return modes;
+    }
+
+    for requested_mode in requested_modes {
+        if !modes.contains(requested_mode) {
+            modes.push(*requested_mode);
+        }
+    }
+
+    modes
+}
+
+fn mode_enabled(modes: &[OutputMode], expected_mode: OutputMode) -> bool {
+    modes.contains(&expected_mode)
+}
+
+fn resolve_output_dir(
+    output: Option<PathBuf>,
+    command: &[String],
+    modes: &[OutputMode],
+) -> Option<PathBuf> {
+    if mode_enabled(modes, OutputMode::Png) || mode_enabled(modes, OutputMode::Svg) {
+        Some(output.unwrap_or_else(|| generated_output_dir(command, current_timestamp_millis())))
+    } else {
+        None
+    }
+}
+
+fn output_dir_for_images(output_dir: Option<&PathBuf>) -> Result<&Path> {
+    output_dir
+        .map(PathBuf::as_path)
+        .context("Image mode requested but no output directory was resolved")
 }
 
 fn generated_output_dir(command: &[String], timestamp_millis: u128) -> PathBuf {
@@ -158,7 +225,8 @@ mod tests {
     use std::{path::PathBuf, process::ExitCode};
 
     use super::{
-        exit_code_from_child, generated_output_dir, resolve_output_dir, sanitize_path_component,
+        OutputMode, exit_code_from_child, generated_output_dir, resolve_modes, resolve_output_dir,
+        sanitize_path_component,
     };
 
     #[test]
@@ -200,13 +268,41 @@ mod tests {
     }
 
     #[test]
-    fn keeps_explicit_output_directory() {
+    fn keeps_explicit_output_directory_for_image_modes() {
         let explicit = PathBuf::from("custom-output");
         let command = vec!["my_command".to_string()];
 
         assert_eq!(
-            resolve_output_dir(Some(explicit.clone()), &command),
-            explicit
+            resolve_output_dir(Some(explicit.clone()), &command, &[OutputMode::Png]),
+            Some(explicit)
+        );
+    }
+
+    #[test]
+    fn defaults_to_terminal_mode() {
+        assert_eq!(resolve_modes(&[]), vec![OutputMode::Terminal]);
+    }
+
+    #[test]
+    fn keeps_first_instance_of_each_mode() {
+        assert_eq!(
+            resolve_modes(&[
+                OutputMode::Png,
+                OutputMode::Terminal,
+                OutputMode::Png,
+                OutputMode::Svg,
+                OutputMode::Terminal,
+            ]),
+            vec![OutputMode::Png, OutputMode::Terminal, OutputMode::Svg]
+        );
+    }
+
+    #[test]
+    fn terminal_only_mode_does_not_require_output_directory() {
+        let command = vec!["my_command".to_string()];
+        assert_eq!(
+            resolve_output_dir(None, &command, &[OutputMode::Terminal]),
+            None
         );
     }
 }

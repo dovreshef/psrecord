@@ -12,26 +12,44 @@ fn help_lists_main_options() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--interval"));
     assert!(stdout.contains("--output"));
-    assert!(stdout.contains("--no-ascii"));
+    assert!(stdout.contains("--mode"));
     assert!(stdout.contains("--width"));
     assert!(stdout.contains("--height"));
+    assert!(stdout.contains("terminal"));
+    assert!(stdout.contains("png"));
+    assert!(stdout.contains("svg"));
 }
 
 #[test]
 fn propagates_wrapped_command_exit_code() {
-    let output_dir = unique_output_dir("propagates-exit-code");
-    let output = run_with_fixture(&output_dir, &["--no-ascii"], &["0", "0", "7"]);
-
+    let output = run_psrecord(["--mode", "terminal", "--", fixture_bin(), "0", "0", "7"]);
     assert_eq!(output.status.code(), Some(7));
-    cleanup_output_dir(&output_dir);
 }
 
 #[test]
-fn no_ascii_flag_suppresses_ascii_graph_output() {
-    let output_dir = unique_output_dir("no-ascii");
+fn default_mode_prints_terminal_graphs_to_stdout() {
+    let output = run_psrecord([
+        "--interval",
+        "50",
+        "--",
+        fixture_bin(),
+        "20000000",
+        "400",
+        "0",
+    ]);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Memory Usage ("));
+    assert!(stdout.contains("CPU Usage (%)"));
+}
+
+#[test]
+fn png_mode_suppresses_terminal_graph_output() {
+    let output_dir = unique_output_dir("png-no-terminal");
     let output = run_with_fixture(
         &output_dir,
-        &["--no-ascii", "--interval", "50"],
+        &["--mode", "png", "--interval", "50"],
         &["20000000", "400", "0"],
     );
 
@@ -44,28 +62,11 @@ fn no_ascii_flag_suppresses_ascii_graph_output() {
 }
 
 #[test]
-fn default_mode_prints_ascii_graphs_to_stdout() {
-    let output_dir = unique_output_dir("ascii-default");
-    let output = run_with_fixture(
-        &output_dir,
-        &["--interval", "50"],
-        &["20000000", "400", "0"],
-    );
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Memory Usage ("));
-    assert!(stdout.contains("CPU Usage (%)"));
-
-    cleanup_output_dir(&output_dir);
-}
-
-#[test]
 fn writes_png_outputs_when_samples_exist() {
     let output_dir = unique_output_dir("png-output");
     let output = run_with_fixture(
         &output_dir,
-        &["--no-ascii", "--interval", "50"],
+        &["--mode", "png", "--interval", "50"],
         &["20000000", "400", "0"],
     );
     assert!(output.status.success());
@@ -85,37 +86,100 @@ fn writes_png_outputs_when_samples_exist() {
 }
 
 #[test]
+fn writes_svg_outputs_when_samples_exist() {
+    let output_dir = unique_output_dir("svg-output");
+    let output = run_with_fixture(
+        &output_dir,
+        &["--mode", "svg", "--interval", "50"],
+        &["20000000", "400", "0"],
+    );
+    assert!(output.status.success());
+
+    let memory_svg = output_dir.join("memory.svg");
+    let cpu_svg = output_dir.join("cpu.svg");
+
+    let memory_contents = fs::read_to_string(&memory_svg).expect("memory.svg should exist");
+    let cpu_contents = fs::read_to_string(&cpu_svg).expect("cpu.svg should exist");
+
+    assert!(memory_contents.contains("<svg"), "memory.svg should be SVG");
+    assert!(cpu_contents.contains("<svg"), "cpu.svg should be SVG");
+
+    cleanup_output_dir(&output_dir);
+}
+
+#[test]
+fn combined_modes_generate_terminal_png_and_svg_outputs() {
+    let output_dir = unique_output_dir("combined-modes");
+    let output = run_with_fixture(
+        &output_dir,
+        &[
+            "--mode",
+            "term",
+            "--mode",
+            "png",
+            "--mode",
+            "svg",
+            "--interval",
+            "50",
+        ],
+        &["20000000", "400", "0"],
+    );
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Memory Usage ("));
+    assert!(stdout.contains("CPU Usage (%)"));
+
+    assert!(
+        output_dir.join("memory.png").exists(),
+        "memory.png should exist"
+    );
+    assert!(output_dir.join("cpu.png").exists(), "cpu.png should exist");
+    assert!(
+        output_dir.join("memory.svg").exists(),
+        "memory.svg should exist"
+    );
+    assert!(output_dir.join("cpu.svg").exists(), "cpu.svg should exist");
+
+    cleanup_output_dir(&output_dir);
+}
+
+#[test]
 fn short_lived_command_reports_no_samples() {
     let output_dir = unique_output_dir("no-samples");
-    let output = run_with_fixture(&output_dir, &["--no-ascii"], &["0", "0", "0"]);
+    let output = run_with_fixture(&output_dir, &["--mode", "png"], &["0", "0", "0"]);
     assert!(output.status.success());
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("No samples collected"));
+    assert!(!output_dir.join("memory.png").exists());
+    assert!(!output_dir.join("cpu.png").exists());
 
     cleanup_output_dir(&output_dir);
 }
 
 #[test]
 fn memory_ascii_uses_mb_scale_for_medium_usage() {
-    let output_dir = unique_output_dir("mb-scale");
-    let output = run_with_fixture(
-        &output_dir,
-        &["--interval", "50"],
-        &["200000000", "400", "0"],
-    );
+    let output = run_psrecord([
+        "--interval",
+        "50",
+        "--",
+        fixture_bin(),
+        "200000000",
+        "400",
+        "0",
+    ]);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Memory Usage (MB):"));
-
-    cleanup_output_dir(&output_dir);
 }
 
 #[test]
-fn default_output_uses_generated_psr_directory_name() {
+fn default_output_uses_generated_psr_directory_name_for_image_modes() {
     let output = run_psrecord([
-        "--no-ascii",
+        "--mode",
+        "png",
         "--interval",
         "50",
         "--",
