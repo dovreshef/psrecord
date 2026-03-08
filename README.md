@@ -86,6 +86,10 @@ The same unit is used for terminal, PNG, and SVG memory graphs.
 
 `psrecord` image modes (`png` and `svg`) render chart text via `plotters`, which may require native font libraries on Unix-like systems.
 
+Linux builds use `plotters` with `fontconfig-dlopen`, so Fontconfig is loaded at runtime instead of being linked at build time.
+That means cross-compiling to Linux with `cargo zigbuild` does not require configuring target-side `pkg-config` for Fontconfig.
+Image rendering on the target system still expects Fontconfig and installed fonts to be available at runtime.
+
 ### Linux (Ubuntu/Debian)
 
 Install build tools and font dependencies:
